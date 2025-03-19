@@ -1,15 +1,16 @@
-from django.contrib.auth.models import User
-from django.core.mail import send_mail
+from django.contrib.auth import get_user_model
+from django.views.decorators.csrf import csrf_exempt
+from django.utils.decorators import method_decorator
 from django.http import JsonResponse
 from django.views import View
 import random
 import string
 from datetime import datetime, timedelta
-from django.views.decorators.csrf import csrf_exempt
-from django.utils.decorators import method_decorator
+from django.core.mail import send_mail
 
-# Store verification codes in memory (use a database in production)
 verification_codes = {}
+
+User = get_user_model()  # Use the custom user model
 
 @method_decorator(csrf_exempt, name='dispatch')
 class RegisterView(View):
@@ -17,6 +18,18 @@ class RegisterView(View):
         email = request.POST.get('email')
         username = request.POST.get('username')
         password = request.POST.get('password')
+
+        # Debugging: Print the received email and username
+        print(f"Received email during registration: {email}")
+        print(f"Received username during registration: {username}")
+
+        # Check if email is provided
+        if not email:
+            return JsonResponse({'error': 'Email is required'}, status=400)
+
+        # Check if username is provided
+        if not username:
+            return JsonResponse({'error': 'Username is required'}, status=400)
 
         # Check if email already exists
         if User.objects.filter(email=email).exists():
@@ -34,21 +47,17 @@ class RegisterView(View):
             'password': password,
         }
 
+        # Debugging: Print the stored verification codes
+        print(f"Stored verification codes: {verification_codes}")
+
         # Send the verification code via email
         send_mail(
             'Your Verification Code',
             f'Your verification code is: {code}',
-            'syedalianza@gmail.com',  # Replace with your email
-            ['syedalianza@gmail.com'],
+            'syedalianza@gmail.com',  # Sender email
+            [email],  # Recipient email
             fail_silently=False,
         )
-        # send_mail(
-        #     'Test Subject',
-        #     'Test message body.',
-        #     'syedalianza@gmail.com',  # Sender email
-        #     ['syedalianza@gmail.com'],  # Recipient email
-        #     fail_silently=False,
-        # )
 
         return JsonResponse({'message': 'Verification code sent to your email'}, status=200)
 
@@ -58,19 +67,31 @@ class VerifyEmailView(View):
         email = request.POST.get('email')
         code = request.POST.get('code')
 
-        # Check if the email and code match
-        if email not in verification_codes or verification_codes[email]['code'] != code:
+        # Debugging: Print the received email and code
+        print(f"Received email: {email}")
+        print(f"Received code: {code}")
+        print(f"Stored codes: {verification_codes}")
+
+        # Check if the email exists in verification_codes
+        if email not in verification_codes:
+            print("Email not found in verification_codes")
+            return JsonResponse({'error': 'Invalid code'}, status=400)
+
+        # Check if the code matches
+        if verification_codes[email]['code'] != code:
+            print("Code does not match")
             return JsonResponse({'error': 'Invalid code'}, status=400)
 
         # Check if the code has expired
         if datetime.now() > verification_codes[email]['expiration']:
+            print("Code has expired")
             return JsonResponse({'error': 'Code has expired'}, status=400)
 
         # Create the user
         user_data = verification_codes[email]
         user = User.objects.create_user(
-            username=user_data['username'],
             email=email,
+            username=user_data['username'],
             password=user_data['password'],
         )
 
