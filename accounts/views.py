@@ -14,6 +14,7 @@ from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
 from django.utils.encoding import force_bytes
 from .utils import password_reset_token
 import base64
+import json
 
 verification_codes = {}
 
@@ -161,3 +162,52 @@ class PasswordResetConfirmView(View):
         user.save()
 
         return JsonResponse({'message': 'Password reset successful'}, status=200)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class GoogleLoginView(View):
+    def post(self, request):
+        # Parse the request body as JSON
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON'}, status=400)
+
+        # Debugging: Print the parsed data
+        print("Parsed data:", data)
+
+        email = data.get('email')
+        name = data.get('name')
+
+        # Debugging: Print the email and name
+        print("Email:", email)
+        print("Name:", name)
+
+        if not email:
+            return JsonResponse({'error': 'Email is required'}, status=400)
+
+        try:
+            # Check if the email is already registered
+            user = User.objects.get(email=email)
+            return JsonResponse({'error': 'Email already exists'}, status=400)
+        except User.DoesNotExist:
+            # Create a new user
+            username = email.split('@')[0]  # Use email prefix as username
+            password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+            user = User.objects.create_user(
+                email=email,
+                username=username,
+                password=password,
+                first_name=name,
+            )
+
+            # Generate tokens (you can use your existing token generation logic)
+            from rest_framework_simplejwt.tokens import RefreshToken
+            refresh = RefreshToken.for_user(user)
+            access = str(refresh.access_token)
+
+            return JsonResponse({
+                'access': access,
+                'refresh': str(refresh),
+                'username': user.username,
+            }, status=200)
