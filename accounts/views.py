@@ -7,6 +7,13 @@ import random
 import string
 from datetime import datetime, timedelta
 from django.core.mail import send_mail
+from rest_framework_simplejwt.views import TokenObtainPairView
+from .serializers import CustomTokenObtainPairSerializer
+from django.utils.encoding import force_str
+from django.utils.http import urlsafe_base64_encode, urlsafe_base64_decode
+from django.utils.encoding import force_bytes
+from .utils import password_reset_token
+import base64
 
 verification_codes = {}
 
@@ -99,3 +106,58 @@ class VerifyEmailView(View):
         del verification_codes[email]
 
         return JsonResponse({'message': 'User created successfully'}, status=201)
+
+
+class CustomTokenObtainPairView(TokenObtainPairView):
+    serializer_class = CustomTokenObtainPairSerializer
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class PasswordResetRequestView(View):
+    def post(self, request):
+        email = request.POST.get('email')
+        print("Email:", email)
+
+        try:
+            user = User.objects.get(email=email)
+        except User.DoesNotExist:
+            return JsonResponse({'error': 'User with this email does not exist'}, status=400)
+
+        # Generate a password reset token
+        token = password_reset_token.make_token(user)
+        uid = urlsafe_base64_encode(force_bytes(user.pk))
+
+        # Create the password reset link
+        reset_url = f"http://localhost:3000/reset-password/{uid}/{token}/"
+
+        # Send the password reset email
+        send_mail(
+            'Password Reset Request',
+            f'Click the link to reset your password: {reset_url}',
+            'noreply@yourdomain.com',  # Sender email
+            [email],  # Recipient email
+            fail_silently=False,
+        )
+
+        return JsonResponse({'message': 'Password reset link sent to your email'}, status=200)
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class PasswordResetConfirmView(View):
+    def post(self, request, uidb64, token):
+        try:
+            uid = force_str(urlsafe_base64_decode(uidb64))
+            user = User.objects.get(pk=uid)
+        except (TypeError, ValueError, OverflowError, User.DoesNotExist):
+            return JsonResponse({'error': 'Invalid user'}, status=400)
+
+        # Verify the token
+        if not password_reset_token.check_token(user, token):
+            return JsonResponse({'error': 'Invalid or expired token'}, status=400)
+
+        # Update the user's password
+        new_password = request.POST.get('new_password')
+        user.set_password(new_password)
+        user.save()
+
+        return JsonResponse({'message': 'Password reset successful'}, status=200)
