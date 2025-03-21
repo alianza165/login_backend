@@ -6,6 +6,7 @@ from django.views import View
 import random
 import string
 from datetime import datetime, timedelta
+from django.utils import timezone
 from django.core.mail import send_mail
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .serializers import CustomTokenObtainPairSerializer
@@ -15,8 +16,10 @@ from django.utils.encoding import force_bytes
 from .utils import password_reset_token
 import base64
 import json
+import uuid
 
 verification_codes = {}
+pending_users = {}
 
 User = get_user_model()  # Use the custom user model
 
@@ -27,86 +30,66 @@ class RegisterView(View):
         username = request.POST.get('username')
         password = request.POST.get('password')
 
-        # Debugging: Print the received email and username
-        print(f"Received email during registration: {email}")
-        print(f"Received username during registration: {username}")
-
-        # Check if email is provided
-        if not email:
-            return JsonResponse({'error': 'Email is required'}, status=400)
-
-        # Check if username is provided
-        if not username:
-            return JsonResponse({'error': 'Username is required'}, status=400)
-
-        # Check if email already exists
+        # Check if the user already exists
         if User.objects.filter(email=email).exists():
-            return JsonResponse({'error': 'Email already exists'}, status=400)
+            return JsonResponse({'error': 'User with this email already exists'}, status=400)
 
-        # Generate a random 6-digit verification code
-        code = ''.join(random.choices(string.digits, k=6))
-        expiration_time = datetime.now() + timedelta(minutes=2)
+        # Generate a verification token
+        verification_token = str(uuid.uuid4())
+        expiry = timezone.now() + timedelta(hours=24)  # Token expires in 24 hours
 
-        # Store the code and user data temporarily
-        verification_codes[email] = {
-            'code': code,
-            'expiration': expiration_time,
+        # Save the user data and token temporarily (e.g., in a PendingUser model or cache)
+        # For simplicity, we'll use a dictionary (in production, use a database or cache)
+        pending_users[email] = {
             'username': username,
             'password': password,
+            'token': verification_token,
+            'expiry': expiry,
         }
 
-        # Debugging: Print the stored verification codes
-        print(f"Stored verification codes: {verification_codes}")
+        # Create the verification link
+        verification_url = f"http://localhost:3000/verify-email/{urlsafe_base64_encode(force_bytes(email))}/{verification_token}/"
 
-        # Send the verification code via email
+        # Send the verification email
         send_mail(
-            'Your Verification Code',
-            f'Your verification code is: {code}',
+            'Verify Your Email',
+            f'Click the link to verify your email: {verification_url}',
             'syedalianza@gmail.com',  # Sender email
             [email],  # Recipient email
             fail_silently=False,
         )
 
-        return JsonResponse({'message': 'Verification code sent to your email'}, status=200)
+        return JsonResponse({'message': 'Verification link sent to your email'}, status=200)
 
 @method_decorator(csrf_exempt, name='dispatch')
 class VerifyEmailView(View):
-    def post(self, request):
-        email = request.POST.get('email')
-        code = request.POST.get('code')
+    def get(self, request, uidb64, token):
+        try:
+            email = force_str(urlsafe_base64_decode(uidb64))
+        except (TypeError, ValueError, OverflowError):
+            return JsonResponse({'error': 'Invalid link'}, status=400)
 
-        # Debugging: Print the received email and code
-        print(f"Received email: {email}")
-        print(f"Received code: {code}")
-        print(f"Stored codes: {verification_codes}")
+        # Check if the email exists in pending_users
+        if email not in pending_users:
+            return JsonResponse({'error': 'Invalid or expired link'}, status=400)
 
-        # Check if the email exists in verification_codes
-        if email not in verification_codes:
-            print("Email not found in verification_codes")
-            return JsonResponse({'error': 'Invalid code'}, status=400)
+        user_data = pending_users[email]
 
-        # Check if the code matches
-        if verification_codes[email]['code'] != code:
-            print("Code does not match")
-            return JsonResponse({'error': 'Invalid code'}, status=400)
-
-        # Check if the code has expired
-        if datetime.now() > verification_codes[email]['expiration']:
-            print("Code has expired")
-            return JsonResponse({'error': 'Code has expired'}, status=400)
+        # Check if the token matches and is not expired
+        if user_data['token'] != token or timezone.now() > user_data['expiry']:
+            return JsonResponse({'error': 'Invalid or expired link'}, status=400)
 
         # Create the user
-        user_data = verification_codes[email]
         user = User.objects.create_user(
             email=email,
             username=user_data['username'],
             password=user_data['password'],
         )
 
-        # Clear the verification code
-        del verification_codes[email]
+        # Clear the pending user data
+        del pending_users[email]
 
-        return JsonResponse({'message': 'User created successfully'}, status=201)
+        return JsonResponse({'message': 'Email verified successfully'}, status=200)
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -173,15 +156,8 @@ class GoogleLoginView(View):
         except json.JSONDecodeError:
             return JsonResponse({'error': 'Invalid JSON'}, status=400)
 
-        # Debugging: Print the parsed data
-        print("Parsed data:", data)
-
         email = data.get('email')
         name = data.get('name')
-
-        # Debugging: Print the email and name
-        print("Email:", email)
-        print("Name:", name)
 
         if not email:
             return JsonResponse({'error': 'Email is required'}, status=400)
@@ -189,11 +165,11 @@ class GoogleLoginView(View):
         try:
             # Check if the email is already registered
             user = User.objects.get(email=email)
-            return JsonResponse({'error': 'Email already exists'}, status=400)
+            return JsonResponse({'error': 'Email already exists. Please log in using your credentials.'}, status=400)
         except User.DoesNotExist:
             # Create a new user
             username = email.split('@')[0]  # Use email prefix as username
-            password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))
+            password = ''.join(random.choices(string.ascii_letters + string.digits, k=12))  # Generate a random password
             user = User.objects.create_user(
                 email=email,
                 username=username,
@@ -201,7 +177,7 @@ class GoogleLoginView(View):
                 first_name=name,
             )
 
-            # Generate tokens (you can use your existing token generation logic)
+            # Generate tokens
             from rest_framework_simplejwt.tokens import RefreshToken
             refresh = RefreshToken.for_user(user)
             access = str(refresh.access_token)
